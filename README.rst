@@ -5,6 +5,7 @@ Features of the fork:
 - Supports a draw button 
 - New -d argument to find duplicates. Using -d will show the user two similar photos and asks the user to either keep both, or delete one of them. The deleted photos will be moved to a "duplicates" folder
 
+.. code-block:: bash
 usage: drank.py [-h] [-r] [-d] [-ro N_ROUNDS] [-fi FIGSIZE FIGSIZE] photo_dir
 
 Uses the Elo ranking algorithm to sort your images by rank. The program globs for .jpg images to present to you in
