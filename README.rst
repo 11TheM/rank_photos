@@ -5,7 +5,7 @@ Features of the fork:
 - Supports a draw button 
 - New -d argument to find duplicates. Using -d will show the user two similar photos and asks the user to either keep both, or delete one of them. The deleted photos will be moved to a "duplicates" folder. Now you must also set -r to rank photos:
 
-
+''
    usage: drank.py [-h] [-r] [-d] [-ro N_ROUNDS] [-fi FIGSIZE FIGSIZE] photo_dir
 
   Uses the Elo ranking algorithm to sort your images by rank. The program globs for .jpg images to present to you in
@@ -23,3 +23,4 @@ Features of the fork:
                         Specifies the number of rounds to pass through the photo set (3)
     -fi FIGSIZE FIGSIZE, --figsize FIGSIZE FIGSIZE
                         Specifies width and height of the Matplotlib figsize (20, 12)
+''
