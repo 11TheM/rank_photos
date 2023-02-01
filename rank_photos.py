@@ -1,45 +1,44 @@
-#!/usr/bin/env python
+
 """
-Matplotlib based photo ranking system using the Elo rating system.
-
-Reference: http://en.wikipedia.org/wiki/Elo_rating_system
-
-by Nick Hilton
-
-This file is in the public domain.
+A python program that ranks images based on the glicko rating system(https://en.wikipedia.org/wiki/Glicko_rating_system) and user input
 
 """
 
-# Python
 import argparse
 import glob
 import json
 import os
 import sys
-
-
-# 3rd party
+import math
+import openpyxl
+from openpyxl import Workbook, load_workbook
+import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-
 import exifread
+from imagededup.methods import CNN
+
 
 
 class Photo:
 
     LEFT = 0
     RIGHT = 1
+    DRAW = 0,5
 
-    def __init__(self, filename, score = 1400.0, wins = 0, matches = 0):
+    c = math.sqrt((pow(350,2) - pow(50,2))/20)
+
+    def __init__(self, filename, score = 1400.0, wins = 0, matches = 0, kvalue = 350):
 
         if not os.path.isfile(filename):
-            raise ValueError("Could not find the file: %s" % filename)
+            raise ValueError("No file named {filename}")
 
         self._filename = filename
         self._score = score
         self._wins = wins
         self._matches = matches
+        self._kvalue = kvalue
 
         self._read_and_downsample()
 
@@ -55,8 +54,12 @@ class Photo:
     def matches(self):
         return self._matches
 
+    def kvalue(self):
+        return self._kvalue
 
-    def score(self, s = None, is_winner = None):
+
+
+    def score(self, k = None, s = None, is_winner = None):
 
         if s is None:
             return self._score
@@ -67,12 +70,17 @@ class Photo:
 
         self._matches += 1
 
+        self._kvalue = k
+
         if is_winner:
             self._wins += 1
 
 
     def win_percentage(self):
-        return 100.0 * float(self._wins) / float(self._matches)
+        if self._matches == 0:
+            return 0.0
+        else:
+            return 100.0 * float(self._wins) / float(self._matches)
 
 
     def __eq__(self, rhs):
@@ -86,6 +94,7 @@ class Photo:
             'score' : self._score,
             'matches' : self._matches,
             'wins' : self._wins,
+            'kvalue' : self._kvalue,
         }
 
 
@@ -172,10 +181,9 @@ class Display(object):
     """
 
 
-    def __init__(self, f1, f2, title = None, figsize = None):
+    def __init__(self, f1, f2, title = None, figsize = None, duplicates = False):
 
         self._choice = None
-
         assert isinstance(f1, Photo)
         assert isinstance(f2, Photo)
 
@@ -183,6 +191,7 @@ class Display(object):
             figsize = [20,12]
 
         fig = plt.figure(figsize=figsize)
+        plt.get_current_fig_manager().window.wm_geometry("+1+5")
 
         h = 10
 
@@ -191,15 +200,22 @@ class Display(object):
 
         ax21 = plt.subplot2grid((h,6), (h - 1, 1))
         ax22 = plt.subplot2grid((h,6), (h - 1, 4))
+        ax23 = plt.subplot2grid((h,6), (h - 1, 2), colspan = 2)
+        if duplicates == False:
+            kwargs1 = dict(s = 'Select', ha = 'center', va = 'center', fontsize=20)
+            kwargs2 = dict(s = 'Draw', ha = 'center', va = 'center', fontsize=20)
+        elif duplicates == True:
+            kwargs1 = dict(s = 'Delete', ha = 'center', va = 'center', fontsize=20)
+            kwargs2 = dict(s = 'Keep both', ha = 'center', va = 'center', fontsize=20)
 
-        kwargs = dict(s = 'Select', ha = 'center', va = 'center', fontsize=20)
-
-        ax21.text(0.5, 0.5, **kwargs)
-        ax22.text(0.5, 0.5, **kwargs)
+        ax21.text(0.5, 0.5, **kwargs1)
+        ax22.text(0.5, 0.5, **kwargs1)
+        ax23.text(0.5, 0.5, **kwargs2)
 
         self._fig = fig
         self._ax_select_left = ax21
         self._ax_select_right = ax22
+        self._ax_select_draw = ax23
 
         fig.subplots_adjust(
             left = 0.02,
@@ -213,7 +229,7 @@ class Display(object):
         ax11.imshow(f1.data())
         ax12.imshow(f2.data())
 
-        for ax in [ax11, ax12, ax21, ax22]:
+        for ax in [ax11, ax12, ax21, ax22, ax23]:
             ax.set_xticklabels([])
             ax.set_yticklabels([])
 
@@ -238,6 +254,9 @@ class Display(object):
             self._choice = Photo.RIGHT
             plt.close(self._fig)
 
+        elif event.inaxes == self._ax_select_draw:
+            self._choice = Photo.DRAW
+            plt.close(self._fig)
 
     def _on_key_press(self, event):
 
@@ -264,7 +283,12 @@ class EloTable:
         self._shuffled_keys = []
 
 
-    def add_photo(self, filename_or_photo):
+    def add_photo(self, filename_or_photo, filepath = None):
+
+
+        wb = load_workbook('ranked.xlsx')
+        ws = wb.active
+        g = 2
 
         if isinstance(filename_or_photo, str):
 
@@ -272,18 +296,29 @@ class EloTable:
 
             if filename not in self._photos:
                 self._photos[filename] = Photo(filename)
-
+                if filepath != None:
+                    while ws.cell(column = 1, row = g).value != None:
+                        g += 1;
+                    c1 = ws.cell(column = 1, row = g)
+                    c1.value = filename
+                    wb.save(filepath + '/ranked.xlsx')
         elif isinstance(filename_or_photo, Photo):
 
             photo = filename_or_photo
 
             if photo.filename() not in self._photos:
                 self._photos[photo.filename()] = photo
-
-
-    def get_ranked_list(self):
+                if filepath != None:
+                    while ws.cell(column = 1, row = g).value != None:
+                        g += 1;
+                    c1 = ws.cell(column = 1, row = g)
+                    c1.value = photo.filename()
+                    wb.save(filepath + '/ranked.xlsx')
 
         # Convert the dictionary into a list and then sort by score.
+    def get_ranked_list(self):
+
+
 
         ranked_list = self._photos.values()
 
@@ -294,7 +329,6 @@ class EloTable:
 
         return ranked_list
 
-
     def rank_photos(self, n_iterations, figsize):
         """
         Displays two photos using the command "gnome-open".  Then asks which
@@ -303,15 +337,15 @@ class EloTable:
 
         n_photos = len(self._photos)
 
-        keys = self._photos.keys()
+        keys = list(self._photos.keys())
 
-        for i in xrange(n_iterations):
+        for i in range(n_iterations):
 
             np.random.shuffle(keys)
 
             n_matchups = n_photos / 2
 
-            for j in xrange(0, n_photos - 1, 2):
+            for j in range(0, n_photos - 1, 2):
 
                 match_up = j / 2
 
@@ -323,34 +357,60 @@ class EloTable:
                 photo_a = self._photos[keys[j]]
                 photo_b = self._photos[keys[j+1]]
 
-                d = Display(photo_a, photo_b, title, figsize)
+                d = Display(photo_a, photo_b, title, figsize,duplicates=False)
 
                 if d._choice == Photo.LEFT:
-                    self.__score_result(photo_a, photo_b)
+                    self.__score_result(photo_a, photo_b, draw = False)
                 elif d._choice == Photo.RIGHT:
-                    self.__score_result(photo_b, photo_a)
+                    self.__score_result(photo_b, photo_a, draw = False)
+                elif d._choice == Photo.DRAW:
+                    self.__score_result(photo_b, photo_a, draw = True)
                 else:
                     raise RuntimeError("oops, found a bug!")
 
 
-    def __score_result(self, winning_photo, loosing_photo):
+
+    def __score_result(self, winning_photo, loosing_photo, draw):
 
         # Current ratings
         R_a = winning_photo.score()
         R_b = loosing_photo.score()
 
+        # Current rating deviation
+        k_a = winning_photo.kvalue()
+        k_b = loosing_photo.kvalue()
+
+        q = 0.00575646273
+
+        g_a = 1 / math.sqrt(1 + 3 * pow(q , 2) * pow(k_a, 2) / pow(math.pi, 2))
+        g_b = 1 / math.sqrt(1 + 3 * pow(q , 2) * pow(k_b, 2) / pow(math.pi, 2))
+
         # Expectation
+        E_a = 1.0 / (1.0 + 10.0 ** (-1 * g_a * (R_a - R_b) / 400.0))
+        E_b = 1.0 / (1.0 + 10.0 ** (-1 * g_b * (R_b - R_a) / 400.0))
 
-        E_a = 1.0 / (1.0 + 10.0 ** ((R_a - R_b) / 400.0))
+        d_a = math.sqrt(1/(pow(q, 2) * pow(g_a, 2) * E_a * (1 - E_a)))
+        d_b = math.sqrt(1/(pow(q, 2) * pow(g_b, 2) * E_b * (1 - E_b)))
 
-        E_b = 1.0 / (1.0 + 10.0 ** ((R_b - R_a) / 400.0))
+        # New rating deviation
+        k_a = 1 / math.sqrt((1/(pow(k_a, 2)) + (1/pow(d_a, 2))))
+        k_b = 1 / math.sqrt((1/(pow(k_b, 2)) + (1/pow(d_b, 2))))
 
         # New ratings
-        R_a = R_a + self._K * (1.0 - E_a)
-        R_b = R_b + self._K * (0.0 - E_b)
+        if draw == True:
+            R_a = R_a + ((q * pow(k_a,2) * g_a) * (0.5 - E_a))
+            R_b = R_b + ((q * pow(k_b,2) * g_b) * (0.5 - E_b))
 
-        winning_photo.score(R_a, True)
-        loosing_photo.score(R_b, False)
+            winning_photo.score(k_a,R_a, False)
+            loosing_photo.score(k_b,R_b, False)
+
+        else:
+            R_a = R_a + ((q * pow(k_a,2) * g_a) * (1.0 - E_a))
+            R_b = R_b + ((q * pow(k_b,2) * g_b) * (0.0 - E_b))
+            winning_photo.score(k_a,R_a, True)
+            loosing_photo.score(k_b,R_b, False)
+
+
 
 
     def to_dict(self):
@@ -361,93 +421,68 @@ class EloTable:
 
         return {'photos' : rl}
 
+def find_duplicates1(figsize, directory):
+    if not os.path.exists('Duplicates'):
+        os.makedirs('Duplicates')
+    print("Finding duplicates...")
+    method_object = CNN()
+    duplicates = method_object.find_duplicates(image_dir=directory)
+
+    for key, value in duplicates.items():
+        for i, item in enumerate(value):
+            if isinstance(item[1], np.float32):
+                # Create a new tuple with the modified value
+                new_item = (item[0], float(item[1]))
+                # Replace the original tuple with the new one
+                value[i] = new_item
+
+    for key, value in list(duplicates.items()):
+        # Check if the value is not an empty list
+        if not value:
+            # Add the key and value to the list
+            del duplicates[key]
+
+    # Open a file for writing
+    with open('duplicates.json', 'w') as outfile:
+        # Write the dictionary to the file in JSON format
+        json.dump(duplicates, outfile)
+
+    already_shown = []
+    for key, value_list in duplicates.items():
+        if key not in already_shown:
+            value_list.insert(0,key)
+            for index, value in enumerate(value_list):
+                if index + 1 < len(value_list):
+                # Skip over any values that have already been moved to the Duplicates directory
+                    if os.path.exists(value) and os.path.exists(value_list[index + 1]):
+                        photo_a = Photo(value_list[index])
+                        photo_b = Photo(value_list[index + 1])
+                        d = Display(photo_a, photo_b,title='Duplicates',figsize=figsize,duplicates=True)
+                        if d._choice == Photo.LEFT:
+                            shutil.move(directory + '\\' + photo_a._filename,directory + '\\Duplicates')
+                        elif d._choice == Photo.RIGHT:
+                            shutil.move(directory + '\\' + photo_b._filename,directory + '\\Duplicates')
+                        elif d._choice == Photo.DRAW:
+                            pass
+                        else:
+                            raise RuntimeError("oops, found a bug!")
+        already_shown.append(key)
+        already_shown.extend(value_list)
+    print('done')
 
 
-def main():
+def rank(rounds,figsize,directory,table):
 
-    description = """\
-Uses the Elo ranking algorithm to sort your images by rank.  The program globs
-for .jpg images to present to you in random order, then you select the better
-photo.  After n-rounds, the results are reported.
-
-Click on the "Select" button or press the LEFT or RIGHT arrow to pick the
-better photo.
-
-"""
-    parser = argparse.ArgumentParser(description = description)
-
-    parser.add_argument(
-        "-r",
-        "--n-rounds",
-        type = int,
-        default = 3,
-        help = "Specifies the number of rounds to pass through the photo set (3)"
-    )
-
-    parser.add_argument(
-        "-f",
-        "--figsize",
-        nargs = 2,
-        type = int,
-        default = [20, 12],
-        help = "Specifies width and height of the Matplotlib figsize (20, 12)"
-    )
-
-    parser.add_argument(
-        "photo_dir",
-        help = "The photo directory to scan for .jpg images"
-    )
-
-    args = parser.parse_args()
-
-    assert os.path.isdir(args.photo_dir)
-
-    os.chdir(args.photo_dir)
-
-    ranking_table_json = 'ranking_table.json'
-    ranked_txt         = 'ranked.txt'
-
-    # Create the ranking table and add photos to it.
-
-    table = EloTable()
-
-    #--------------------------------------------------------------------------
-    # Read in table .json if present
-
-    sys.stdout.write("Reading in photos and downsampling ...")
-    sys.stdout.flush()
-
-    if os.path.isfile(ranking_table_json):
-        with open(ranking_table_json, 'r') as fd:
-            d = json.load(fd)
-
-        # read photos and add to table
-
-        for p in d['photos']:
-
-            photo = Photo(**p)
-
-            table.add_photo(photo)
-
-    #--------------------------------------------------------------------------
-    # glob for files, to include newly added files
-
-    filelist = glob.glob('*.jpg')
-
-    for f in filelist:
-        table.add_photo(f)
-
-    print(" done!")
 
     #--------------------------------------------------------------------------
     # Rank the photos!
 
-    table.rank_photos(args.n_rounds, args.figsize)
+    table.rank_photos(rounds, figsize)
 
     #--------------------------------------------------------------------------
     # save the table
 
-    with open(ranking_table_json, 'w') as fd:
+    with open(directory + '\\ranking_table.json', 'w') as fd:
 
         d = table.to_dict()
 
@@ -457,8 +492,8 @@ better photo.
 
     #--------------------------------------------------------------------------
     # dump ranked list to disk
-
-    with open(ranked_txt, 'w') as fd:
+    print('123')
+    with open(directory + '\\ranked.txt', 'w') as fd:
 
         ranked_list = table.get_ranked_list()
 
@@ -477,17 +512,182 @@ better photo.
                 photo.win_percentage(),
                 photo.filename())
 
-            fd.write(line)
 
+
+            fd.write(line)
+    print('123')
+    #--------------------------------------------------------------------------
+    # write xsl table
+    wb = load_workbook(directory + '/ranked.xlsx')
+    ws = wb.active
+    a = 2
+
+    for g, photo in enumerate(ranked_list):
+        g +=1
+
+    while ws.cell(row = 1,column = a).value != None:
+        a += 1
+    c1 = ws.cell(row = 1, column = a)
+    c1.value = a - 1
+    for z, photo in enumerate(ranked_list):
+        b = 2
+        while(True):
+            if ws.cell(row = b,column = 1).value == photo.filename():
+                c2 = ws.cell(row = b, column = a)
+                c2.value = photo.score()
+                break;
+            b += 1
+
+    wb.save(directory + '/ranked.xlsx')
     #--------------------------------------------------------------------------
     # dump ranked list to screen
 
-    print "Final Ranking:"
+    print("Final Ranking:")
 
-    with open(ranked_txt, 'r') as fd:
+    with open(directory + '\\ranked.txt', 'r') as fd:
         text = fd.read()
 
-    print text
+    print(text)
+
+def main():
+    description = """\
+    Uses the Elo ranking algorithm to sort your images by rank.  The program globs
+    for .jpg images to present to you in random order, then you select the better
+    photo.  After n-rounds, the results are reported.
+
+    Click on the "Select" button or press the LEFT or RIGHT arrow to pick the
+    better photo.
+
+    """
+    parser = argparse.ArgumentParser(description = description)
+
+    parser.add_argument(
+        '-r', '--rank',
+        action='store_true',
+        help='rank images'
+    )
+
+    parser.add_argument(
+        '-d', '--duplicates',
+        action='store_true',
+        help='display duplicates'
+    )
+
+    parser.add_argument(
+        "-ro",
+        "--n-rounds",
+        type = int,
+        default = 3,
+        help = "Specifies the number of rounds to pass through the photo set (3)"
+    )
+
+    parser.add_argument(
+        "-fi",
+        "--figsize",
+        nargs=2,
+        type=int,
+        default=[20, 12],
+        help="Specifies width and height of the Matplotlib figsize (20, 12)"
+    )
+
+
+
+
+    parser.add_argument(
+        "photo_dir",
+        help = "The photo directory to scan for .jpg images"
+    )
+
+    args = parser.parse_args()
+
+    assert os.path.isdir(args.photo_dir)
+
+    os.chdir(args.photo_dir)
+
+    ranking_table_json = 'ranking_table.json'
+    ranked_txt         = 'ranked.txt'
+    if not os.path.isfile('ranked.xlsx'):
+        wb = openpyxl.Workbook()
+        wb.save(args.photo_dir + '/ranked.xlsx')
+
+
+
+    # Create the ranking table and add photos to it.
+
+    table = EloTable()
+
+    #--------------------------------------------------------------------------
+    # Read in table .json if present
+
+    sys.stdout.write("Reading in photos and downsampling ...")
+    sys.stdout.flush()
+
+    if os.path.isfile(ranking_table_json):
+        with open(ranking_table_json, 'r') as fd:
+            d = json.load(fd)
+
+        filtered_photos = []
+        for i, photo in enumerate(d['photos']):
+            filename = photo["filename"]
+            filepath = os.path.join(args.photo_dir, filename)
+            if not os.path.isfile(filepath):
+                print('deleting ' + filename + '...')
+                filtered_photos.append(photo)
+        for photo in filtered_photos:
+            d['photos'].remove(photo)
+
+# Write the modified data back to the JSON file
+        with open(ranking_table_json, 'w') as f:
+            json.dump(d, f)
+
+
+        # read photos and add to table
+    if os.path.isfile(ranking_table_json):
+        with open(ranking_table_json, 'r') as fd:
+            d = json.load(fd)
+
+        for p in d['photos']:
+
+            photo = Photo(**p)
+
+            table.add_photo(photo)
+
+    #--------------------------------------------------------------------------
+    # glob for files, to include newly added files
+
+    filelist = glob.glob('*.jpg') + glob.glob('*.jpeg')
+
+    for f in filelist:
+        table.add_photo(f, args.photo_dir)
+
+
+
+    print("Done !")
+
+    if args.duplicates:
+        find_duplicates1(args.figsize,args.photo_dir)
+        if os.path.isfile(ranking_table_json):
+            with open(ranking_table_json, 'r') as fd:
+                d = json.load(fd)
+
+            filtered_photos = []
+            for i, photo in enumerate(d['photos']):
+                filename = photo["filename"]
+                filepath = os.path.join(args.photo_dir, filename)
+                if not os.path.isfile(filepath):
+                    print('deleting ' + filename + '...')
+                    filtered_photos.append(photo)
+            for photo in filtered_photos:
+                d['photos'].remove(photo)
+
+    # Write the modified data back to the JSON file
+            with open(ranking_table_json, 'w') as f:
+                json.dump(d, f)
+    if args.rank:
+        rank(args.n_rounds,args.figsize,args.photo_dir,table)
+
+        # do something else
+
 
 
 
