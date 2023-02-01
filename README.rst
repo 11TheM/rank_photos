@@ -23,3 +23,4 @@ optional arguments:
                         Specifies the number of rounds to pass through the photo set (3)
   -fi FIGSIZE FIGSIZE, --figsize FIGSIZE FIGSIZE
                         Specifies width and height of the Matplotlib figsize (20, 12)
+.. code-block:: bash
